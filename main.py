@@ -4,6 +4,7 @@ import logging
 import subprocess
 import shlex
 from dotenv import load_dotenv
+import concurrent.futures
 
 load_dotenv()
 
@@ -15,8 +16,8 @@ class LogAnalyzer:
         self.google_api_key = google_api_key
         self.hugging_face_api_key = hugging_face_api_key
 
-    async def _call_ai_provider(self, prompt):
-        command = f"npx @juspay/neurolink generate {shlex.quote(prompt)} --provider huggingface --model gemma-3-27b-it --timeout 60s"
+    def _call_ai_provider(self, prompt):
+        command = f"npx @juspay/neurolink generate {shlex.quote(prompt)} --provider google-ai --model gemini-2.5-pro --timeout 60s"
         
         env = os.environ.copy()
         env["HUGGINGFACE_API_KEY"] = self.hugging_face_api_key
@@ -56,14 +57,15 @@ class LogAnalyzer:
     def _split_into_chunks(self, text, chunk_size=4096):
         return [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
 
-    async def analyze_logs(self, log_file_path, error_message):
+    def analyze_logs(self, log_file_path, error_message):
         log_data = self._read_log_file(log_file_path)
         if not log_data:
             return {"summary": "Failed to read log file."}
 
         log_chunks = self._split_into_chunks(log_data)
         
-        async def process_chunk(chunk, i):
+        def process_chunk(chunk_info):
+            chunk, i = chunk_info
             logger.info(f"Processing chunk {i+1}/{len(log_chunks)}")
             summary_prompt = f"""
 1.You are a Senior System Engineer with deep expertise in analyzing logs from distributed systems. You have comprehensive knowledge of UPI system architecture and are well-versed in diagnosing common issues that occur within such ecosystems.
@@ -74,15 +76,15 @@ class LogAnalyzer:
 Log Chunk:
 {chunk}
 """
-            summary = await self._call_ai_provider(summary_prompt)
+            summary = self._call_ai_provider(summary_prompt)
             if "AI analysis failed" in summary.get("summary", ""):
                 logger.error(f"Failed to get summary for chunk {i+1}")
                 return None
             return summary["summary"]
 
-        tasks = [process_chunk(chunk, i) for i, chunk in enumerate(log_chunks)]
-        chunk_summaries = await asyncio.gather(*tasks)
-        
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            chunk_summaries = list(executor.map(process_chunk, zip(log_chunks, range(len(log_chunks)))))
+
         # Filter out failed chunks
         chunk_summaries = [s for s in chunk_summaries if s is not None]
 
@@ -173,21 +175,15 @@ Respond with a **single JSON object** containing one key: `"root_cause"`.
 **Combined Log Summaries:**
 {combined_summary}
 """
-        final_summary = await self._call_ai_provider(FINAL_ANALYSIS_PROMPT)
+        final_summary = self._call_ai_provider(FINAL_ANALYSIS_PROMPT)
         return final_summary
 
 if __name__ == "__main__":
-    import asyncio
-
     hugging_face_api_key = os.getenv("HUGGINGFACE_API_KEY")
     google_api_key = os.getenv("GOOGLE_AI_API_KEY")
     if not hugging_face_api_key:
         logger.error("HUGGINGFACE_API_KEY environment variable not set.")
     else:
         analyzer = LogAnalyzer(google_api_key, hugging_face_api_key)
-        
-        async def main():
-            result = await analyzer.analyze_logs("sample.log", """RegexValidation \"customerVpa regex failed\"""")
-            print(json.dumps(result, indent=2))
-
-        asyncio.run(main())
+        result = analyzer.analyze_logs("sample.log", """RegexValidation \"customerVpa regex failed\"""")
+        print(json.dumps(result, indent=2))
