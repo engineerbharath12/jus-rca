@@ -17,7 +17,7 @@ This project analyzes log files using a generative AI model to provide a root ca
 
 ## Usage
 
-1.  **Place your log file** in the root of the project directory. For example, `my_app.log`.
+1.  **Place your log file** in the root of the project directory. For example, `sample.log`.
 
 2.  **Run the script:**
     ```bash
