@@ -54,7 +54,7 @@ class LogAnalyzer:
             logger.error(f"Log file not found at: {file_path}")
             return None
 
-    def _split_into_chunks(self, text, chunk_size=4096):
+    def _split_into_chunks(self, text, chunk_size=50000):
         return [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
 
     def analyze_logs(self, log_file_path, error_message):
@@ -175,8 +175,32 @@ Respond with a **single JSON object** containing one key: `"root_cause"`.
 **Combined Log Summaries:**
 {combined_summary}
 """
-        final_summary = self._call_ai_provider(FINAL_ANALYSIS_PROMPT)
-        return final_summary
+        final_summary_json = self._call_ai_provider(FINAL_ANALYSIS_PROMPT)
+        try:
+            summary_str = final_summary_json.get("summary", "{}")
+            json_start_index = summary_str.find('{')
+            if json_start_index != -1:
+                json_str = summary_str[json_start_index:]
+                open_braces = 0
+                json_end_index = -1
+                for i, char in enumerate(json_str):
+                    if char == '{':
+                        open_braces += 1
+                    elif char == '}':
+                        open_braces -= 1
+                    if open_braces == 0:
+                        json_end_index = i
+                        break
+                
+                if json_end_index != -1:
+                    json_str = json_str[:json_end_index+1]
+                    final_summary = json.loads(json_str)
+                    return final_summary.get("root_cause", "Root cause not found.")
+            return "Failed to parse AI response."
+        except (json.JSONDecodeError, KeyError) as e:
+            logger.error(f"Failed to parse final summary: {e}")
+            return "Failed to parse AI response."
+
 
 if __name__ == "__main__":
     hugging_face_api_key = os.getenv("HUGGINGFACE_API_KEY")
@@ -186,4 +210,4 @@ if __name__ == "__main__":
     else:
         analyzer = LogAnalyzer(google_api_key, hugging_face_api_key)
         result = analyzer.analyze_logs("sample.log", """RegexValidation \"customerVpa regex failed\"""")
-        print(json.dumps(result, indent=2))
+        print(result)
