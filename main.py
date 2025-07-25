@@ -5,6 +5,7 @@ import subprocess
 import shlex
 from dotenv import load_dotenv
 import concurrent.futures
+import asyncio
 
 load_dotenv()
 
@@ -16,7 +17,8 @@ class LogAnalyzer:
         self.google_api_key = google_api_key
         self.hugging_face_api_key = hugging_face_api_key
 
-    def _call_ai_provider(self, prompt):
+    def _call_ai_provider(self, prompt_list):
+        prompt = prompt_list[0]['prompt']
         command = f"npx @juspay/neurolink generate {shlex.quote(prompt)} --provider google-ai --model gemini-2.5-pro --timeout 60s"
         
         env = os.environ.copy()
@@ -46,6 +48,59 @@ class LogAnalyzer:
             logger.error(f"An unexpected error occurred: {e}")
             return {"summary": "AI analysis failed"}
 
+    def _call_ai_provider_fun2(self, instances):
+        ENDPOINT_ID = "7472434953993584640"
+        PROJECT_ID = "1080612804342"
+        
+        input_data = {
+            "instances": instances,
+        }
+        
+        input_data_str = json.dumps(input_data)
+            
+        command = f"""
+        curl \\
+        -X POST \\
+        -H "Authorization: Bearer $(gcloud auth print-access-token)" \\
+        -H "Content-Type: application/json" \\
+        "https://{ENDPOINT_ID}.asia-southeast1-{PROJECT_ID}.prediction.vertexai.goog/v1/projects/{PROJECT_ID}/locations/asia-southeast1/endpoints/{ENDPOINT_ID}:predict" \\
+        -d {shlex.quote(input_data_str)}
+        """
+        
+        try:
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                shell=True
+            )
+            stdout, stderr = process.communicate()
+
+            if process.returncode != 0:
+                logger.error(f"curl command failed with error: {stderr}")
+                return {"summary": "AI analysis failed"}
+
+            response_json = json.loads(stdout)
+            if 'error' in response_json:
+                logger.error(f"AI provider returned an error: {response_json['error']}")
+                return {"summary": "AI analysis failed due to provider error"}
+            
+            summary_text = response_json['predictions'][0]
+            return {"summary": summary_text}
+        except FileNotFoundError:
+            logger.error("curl or gcloud command not found. Make sure they are installed and in your PATH.")
+            return {"summary": "AI analysis failed"}
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to decode AI response. Raw response: {stdout}. Error: {e}")
+            return {"summary": "AI analysis failed"}
+        except (KeyError, IndexError) as e:
+            logger.error(f"Failed to parse AI response: {stdout}. Error: {e}")
+            return {"summary": "AI analysis failed"}
+        except Exception as e:
+            logger.error(f"An unexpected error occurred: {e}")
+            return {"summary": "AI analysis failed"}
+
     def _read_log_file(self, file_path):
         try:
             with open(file_path, 'r') as f:
@@ -57,7 +112,7 @@ class LogAnalyzer:
     def _split_into_chunks(self, text, chunk_size=50000):
         return [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
 
-    def analyze_logs(self, log_file_path, error_message):
+    def analyze_logs_neurolink(self, log_file_path, error_message):
         log_data = self._read_log_file(log_file_path)
         if not log_data:
             return {"summary": "Failed to read log file."}
@@ -76,7 +131,7 @@ class LogAnalyzer:
 Log Chunk:
 {chunk}
 """
-            summary = self._call_ai_provider(summary_prompt)
+            summary = self._call_ai_provider([{'prompt': summary_prompt}])
             if "AI analysis failed" in summary.get("summary", ""):
                 logger.error(f"Failed to get summary for chunk {i+1}")
                 return None
@@ -167,7 +222,7 @@ Based on the provided log summaries, perform a root cause analysis. Follow these
 3.  **Explain the "Why":** Your analysis must go beyond *what* happened and explain *why* it happened. Connect the log events to the expected system behavior and the error code definitions.
     *   *Example:* "The UPI Transaction failed because the signature payload from the Merchant Server was invalid, as indicated by the 'Signature Validation Failed' error in the Juspay SDK logs."
 4.  **Handle Missing Error Messages:** If the `Primary Error to Analyze` is not explicitly found, **do not** state that it's missing. Instead, analyze the entire session to deduce the most probable root cause from the available context and event sequence.
-5.  **Be Factual and Direct:** Present your findings as a clear, concise, and highly detailed paragraph. Avoid ambiguity and generic statements.
+5.  **Be Factual and Direct:** Present your findings as a clear, concise, and highly detailed paragraph.
 
 **Output Format:**
 Respond with a **single JSON object** containing one key: `"root_cause"`.
@@ -175,39 +230,68 @@ Respond with a **single JSON object** containing one key: `"root_cause"`.
 **Combined Log Summaries:**
 {combined_summary}
 """
-        final_summary_json = self._call_ai_provider(FINAL_ANALYSIS_PROMPT)
+        final_summary_json = self._call_ai_provider([{'prompt': FINAL_ANALYSIS_PROMPT}])
         try:
             summary_str = final_summary_json.get("summary", "{}")
+            # Find the start of the JSON object
             json_start_index = summary_str.find('{')
             if json_start_index != -1:
+                # Extract the JSON part of the string
                 json_str = summary_str[json_start_index:]
-                open_braces = 0
-                json_end_index = -1
-                for i, char in enumerate(json_str):
-                    if char == '{':
-                        open_braces += 1
-                    elif char == '}':
-                        open_braces -= 1
-                    if open_braces == 0:
-                        json_end_index = i
-                        break
-                
-                if json_end_index != -1:
-                    json_str = json_str[:json_end_index+1]
-                    final_summary = json.loads(json_str)
-                    return final_summary.get("root_cause", "Root cause not found.")
-            return "Failed to parse AI response."
-        except (json.JSONDecodeError, KeyError) as e:
-            logger.error(f"Failed to parse final summary: {e}")
-            return "Failed to parse AI response."
+                # Parse the JSON
+                final_summary = json.loads(json_str)
+                return final_summary.get("root_cause", "Root cause not found.")
+            
+            logger.error(f"No JSON object found in AI response: {summary_str}")
+            return "Failed to parse AI response: No JSON object found."
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse final summary from AI response: {summary_str}. Error: {e}")
+            return f"Failed to parse AI response: {e}"
+        except KeyError as e:
+            logger.error(f"KeyError while parsing final summary: {e}")
+            return "Failed to parse AI response due to missing key."
+
+    async def analyze_logs_vertex(self, log_file_path, error_message):
+        from analyze_logs import LogAnalyzer as VertexLogAnalyzer
+        
+        print("Initializing log analyzer for Vertex AI...")
+        analyzer = VertexLogAnalyzer(
+            logs_file=log_file_path,
+            error_message=error_message,
+            endpoint_url="https://7472434953993584640.asia-southeast1-1080612804342.prediction.vertexai.goog/v1/projects/1080612804342/locations/asia-southeast1/endpoints/7472434953993584640:predict"
+        )
+
+        print("Starting analysis with Vertex AI...")
+        result = await analyzer.analyze()
+
+        if result:
+            print("\n--- Vertex AI Analysis Complete ---")
+            print(json.dumps(result, indent=2))
+            print("-----------------------------------\n")
+        else:
+            print("Vertex AI analysis did not return any result.")
+        return result
 
 
-if __name__ == "__main__":
+async def main():
+    choice = input("Choose the service to run: (1) Juspay Neurolink (2) Vertex AI: ")
+    
     hugging_face_api_key = os.getenv("HUGGINGFACE_API_KEY")
     google_api_key = os.getenv("GOOGLE_AI_API_KEY")
-    if not hugging_face_api_key:
-        logger.error("HUGGINGFACE_API_KEY environment variable not set.")
-    else:
-        analyzer = LogAnalyzer(google_api_key, hugging_face_api_key)
-        result = analyzer.analyze_logs("sample.log", """RegexValidation \"customerVpa regex failed\"""")
+
+    if not hugging_face_api_key or not google_api_key:
+        logger.error("API keys (HUGGINGFACE_API_KEY, GOOGLE_AI_API_KEY) not set.")
+        return
+
+    analyzer = LogAnalyzer(google_api_key, hugging_face_api_key)
+
+    if choice == '1':
+        result = analyzer.analyze_logs_neurolink("sample.log", """RegexValidation \"customerVpa regex failed\"""")
         print(result)
+    elif choice == '2':
+        await analyzer.analyze_logs_vertex("sample.log", "Invalid Client Auth Token or signature")
+    else:
+        print("Invalid choice. Please run the script again and select 1 or 2.")
+
+if __name__ == "__main__":
+    asyncio.run(main())
