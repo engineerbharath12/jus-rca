@@ -233,12 +233,18 @@ Summaries:
 
 if __name__ == "__main__":
     import asyncio
+    from dotenv import load_dotenv
+
+    load_dotenv()
 
     LOGS_FILE = "sample.log"
     ERROR_MESSAGE = "Invalid Client Auth Token or signature"
-    ENDPOINT_URL = "https://7472434953993584640.asia-southeast1-1080612804342.prediction.vertexai.goog/v1/projects/1080612804342/locations/asia-southeast1/endpoints/7472434953993584640:predict"
+    ENDPOINT_URL = os.getenv("ENDPOINT_URL")
 
-    analyzer = LogAnalyzer(LOGS_FILE, ERROR_MESSAGE, ENDPOINT_URL)
-    result = asyncio.run(analyzer.analyze())
-    if result:
-        print(json.dumps(result, indent=2))
+    if not ENDPOINT_URL:
+        logger.error("ENDPOINT_URL not set in environment variables.")
+    else:
+        analyzer = LogAnalyzer(LOGS_FILE, ERROR_MESSAGE, ENDPOINT_URL)
+        result = asyncio.run(analyzer.analyze())
+        if result:
+            print(json.dumps(result, indent=2))

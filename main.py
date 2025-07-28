@@ -49,8 +49,13 @@ class LogAnalyzer:
             return {"summary": "AI analysis failed"}
 
     def _call_ai_provider_fun2(self, instances):
-        ENDPOINT_ID = "7472434953993584640"
-        PROJECT_ID = "1080612804342"
+        ENDPOINT_ID = os.getenv("ENDPOINT_ID")
+        PROJECT_ID = os.getenv("PROJECT_ID")
+        ENDPOINT_URL = os.getenv("ENDPOINT_URL")
+
+        if not all([ENDPOINT_ID, PROJECT_ID, ENDPOINT_URL]):
+            logger.error("Missing required environment variables: ENDPOINT_ID, PROJECT_ID, ENDPOINT_URL")
+            return {"summary": "AI analysis failed due to missing configuration"}
         
         input_data = {
             "instances": instances,
@@ -63,7 +68,7 @@ class LogAnalyzer:
         -X POST \\
         -H "Authorization: Bearer $(gcloud auth print-access-token)" \\
         -H "Content-Type: application/json" \\
-        "https://{ENDPOINT_ID}.asia-southeast1-{PROJECT_ID}.prediction.vertexai.goog/v1/projects/{PROJECT_ID}/locations/asia-southeast1/endpoints/{ENDPOINT_ID}:predict" \\
+        "{ENDPOINT_URL}" \\
         -d {shlex.quote(input_data_str)}
         """
         
@@ -255,10 +260,15 @@ Respond with a **single JSON object** containing one key: `"root_cause"`.
         from analyze_logs import LogAnalyzer as VertexLogAnalyzer
         
         print("Initializing log analyzer for Vertex AI...")
+        endpoint_url = os.getenv("ENDPOINT_URL")
+        if not endpoint_url:
+            logger.error("ENDPOINT_URL not set in environment variables.")
+            return {"summary": "Vertex AI analysis failed due to missing configuration."}
+
         analyzer = VertexLogAnalyzer(
             logs_file=log_file_path,
             error_message=error_message,
-            endpoint_url="https://7472434953993584640.asia-southeast1-1080612804342.prediction.vertexai.goog/v1/projects/1080612804342/locations/asia-southeast1/endpoints/7472434953993584640:predict"
+            endpoint_url=endpoint_url
         )
 
         print("Starting analysis with Vertex AI...")
